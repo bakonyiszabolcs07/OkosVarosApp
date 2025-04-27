@@ -166,8 +166,8 @@ fun TrackLocation(fusedLocationClient: FusedLocationProviderClient) {
                     if (isInternetAvailable(context)) {
                         uploadSavedPointsToInfluxDB(
                             context,
-                            serverUrl = "https://eu-central-1-1.aws.cloud2.influxdata.com",
-                            token = "z1SVy6HcCHgRYe9mXrVOEpx85P8gvB23CghUhryCU40Uaga1D5FrbsMoN7Efy2C62y_P06A2FzPbVzwBcpnX1Q==",
+                            serverUrl = "url here",
+                            token = "Token here",
                             bucket = "myFirstBucketSzabolcs",
                             org = "Student Project",
                             measurement = "location"
