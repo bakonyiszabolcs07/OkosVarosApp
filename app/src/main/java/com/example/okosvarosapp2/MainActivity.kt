@@ -4,6 +4,10 @@ import android.Manifest
 import android.annotation.SuppressLint
 import android.content.Context
 import android.content.Intent
+import android.hardware.Sensor
+import android.hardware.SensorEvent
+import android.hardware.SensorEventListener
+import android.hardware.SensorManager
 import android.location.Location
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
@@ -34,6 +38,8 @@ import java.io.File
 import java.io.OutputStreamWriter
 import java.net.HttpURLConnection
 import java.net.URL
+import kotlin.math.abs
+import kotlin.math.sqrt
 
 @OptIn(ExperimentalPermissionsApi::class)
 class MainActivity : ComponentActivity() {
@@ -58,7 +64,6 @@ class MainActivity : ComponentActivity() {
         }
     }
 }
-
 @OptIn(ExperimentalPermissionsApi::class)
 @Composable
 fun NotificationPermissionRequest() {
@@ -102,7 +107,6 @@ fun LocationPermissionRequest(fusedLocationClient: FusedLocationProviderClient) 
         }
     }
 }
-
 @SuppressLint("MissingPermission")
 @Composable
 fun TrackLocation(fusedLocationClient: FusedLocationProviderClient) {
@@ -112,11 +116,18 @@ fun TrackLocation(fusedLocationClient: FusedLocationProviderClient) {
     var longitude by remember { mutableStateOf<Double?>(null) }
     var previousLatitude by remember { mutableStateOf<Double?>(null) }
     var previousLongitude by remember { mutableStateOf<Double?>(null) }
+    var previousSavedLatitude by remember { mutableStateOf<Double?>(null) }
+    var previousSavedLongitude by remember { mutableStateOf<Double?>(null) }
     var totalDistance by remember { mutableStateOf(0f) }
     var error by remember { mutableStateOf<String?>(null) }
     val locationPoints = remember { mutableStateListOf<LocationPoint>() }
 
+    val sensorManager = context.getSystemService(Context.SENSOR_SERVICE) as SensorManager
+    val accelerometer = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
+    var isMoving by remember { mutableStateOf(false) }
+
     LaunchedEffect(Unit) {
+        // Foreground Service indítása
         val serviceIntent = Intent(context, LocationForegroundService::class.java)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             serviceIntent.putExtra("foregroundServiceType", "location")
@@ -126,6 +137,27 @@ fun TrackLocation(fusedLocationClient: FusedLocationProviderClient) {
         } else {
             context.startService(serviceIntent)
         }
+
+        // Accelerometer figyelő
+        val accelerometerListener = object : SensorEventListener {
+            override fun onSensorChanged(event: SensorEvent?) {
+                event?.let {
+                    val x = event.values[0]
+                    val y = event.values[1]
+                    val z = event.values[2]
+
+                    val accelerationMagnitude = sqrt(x * x + y * y + z * z)
+                    if (abs(accelerationMagnitude - 9.81f) > 0.2f) {
+                        isMoving = true
+                    } else {
+                        isMoving = false
+                    }
+                }
+            }
+
+            override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
+        }
+        sensorManager.registerListener(accelerometerListener, accelerometer, SensorManager.SENSOR_DELAY_NORMAL)
 
         val savedPoints = loadLocationPointsFromFile(context)
         locationPoints.addAll(savedPoints)
@@ -155,23 +187,40 @@ fun TrackLocation(fusedLocationClient: FusedLocationProviderClient) {
                         }
                     }
 
-                    val newPoint = LocationPoint(
-                        latitude = newLatitude,
-                        longitude = newLongitude,
-                        timestamp = System.currentTimeMillis()
-                    )
-                    locationPoints.add(newPoint)
-                    saveLocationPointsToFile(context, locationPoints)
+                    if (isMoving) {
+                        var distanceSinceLastPoint = 0f
 
-                    if (isInternetAvailable(context)) {
-                        uploadSavedPointsToInfluxDB(
-                            context,
-                            serverUrl = "https://eu-central-1-1.aws.cloud2.influxdata.com",
-                            token = "z1SVy6HcCHgRYe9mXrVOEpx85P8gvB23CghUhryCU40Uaga1D5FrbsMoN7Efy2C62y_P06A2FzPbVzwBcpnX1Q==",
-                            bucket = "myFirstBucketSzabolcs",
-                            org = "Student Project",
-                            measurement = "location"
+                        if (previousSavedLatitude != null && previousSavedLongitude != null) {
+                            distanceSinceLastPoint = calculateDistance(
+                                previousSavedLatitude!!,
+                                previousSavedLongitude!!,
+                                newLatitude,
+                                newLongitude
+                            )
+                        }
+
+                        val newPoint = LocationPoint(
+                            latitude = newLatitude,
+                            longitude = newLongitude,
+                            timestamp = System.currentTimeMillis(),
+                            distanceMeters = distanceSinceLastPoint
                         )
+                        locationPoints.add(newPoint)
+                        saveLocationPointsToFile(context, locationPoints)
+
+                        if (isInternetAvailable(context)) {
+                            uploadSavedPointsToInfluxDB(
+                                context,
+                                serverUrl = "token",
+                                token = "url",
+                                bucket = "myFirstBucketSzabolcs",
+                                org = "Student Project",
+                                measurement = "location"
+                            )
+                        }
+
+                        previousSavedLatitude = newLatitude
+                        previousSavedLongitude = newLongitude
                     }
 
                     previousLatitude = newLatitude
@@ -210,12 +259,12 @@ fun TrackLocation(fusedLocationClient: FusedLocationProviderClient) {
         }
     }
 }
-
 @Serializable
 data class LocationPoint(
     val latitude: Double,
     val longitude: Double,
-    val timestamp: Long
+    val timestamp: Long,
+    val distanceMeters: Float
 )
 
 fun calculateDistance(
@@ -289,7 +338,7 @@ fun uploadSavedPointsToInfluxDB(
     val dataBuilder = StringBuilder()
 
     for (point in savedPoints) {
-        val line = "$measurement latitude=${point.latitude},longitude=${point.longitude} ${point.timestamp * 1_000_000}\n"
+        val line = "$measurement latitude=${point.latitude},longitude=${point.longitude},distance_meters=${point.distanceMeters} ${point.timestamp * 1_000_000}\n"
         dataBuilder.append(line)
     }
 
